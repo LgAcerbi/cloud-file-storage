@@ -5,6 +5,7 @@ pub struct FileMetadata {
     file_path: String,
     size_bytes: u64,
     modified_at: u64,
+    file_hash: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,6 +13,7 @@ pub enum FileMetadataError {
     EmptyId,
     EmptyName,
     EmptyFilePath,
+    EmptyFileHash,
 }
 
 impl FileMetadata {
@@ -21,6 +23,7 @@ impl FileMetadata {
         file_path: String,
         size_bytes: u64,
         modified_at: u64,
+        file_hash: String,
     ) -> Result<Self, FileMetadataError> {
         if id.trim().is_empty() {
             return Err(FileMetadataError::EmptyId);
@@ -34,12 +37,17 @@ impl FileMetadata {
             return Err(FileMetadataError::EmptyFilePath);
         }
 
+        if file_hash.trim().is_empty() {
+            return Err(FileMetadataError::EmptyFileHash);
+        }
+
         Ok(Self {
             id,
             name,
             file_path,
             size_bytes,
             modified_at,
+            file_hash,
         })
     }
 
@@ -62,6 +70,10 @@ impl FileMetadata {
     pub fn modified_at(&self) -> u64 {
         self.modified_at
     }
+
+    pub fn file_hash(&self) -> &str {
+        &self.file_hash
+    }
 }
 
 #[cfg(test)]
@@ -76,6 +88,7 @@ mod tests {
             "/docs/report.pdf".to_string(),
             1024,
             1_710_000_000,
+            "hash-1".to_string(),
         );
 
         assert!(file_metadata.is_ok());
@@ -86,6 +99,7 @@ mod tests {
         assert_eq!(file_metadata.file_path(), "/docs/report.pdf");
         assert_eq!(file_metadata.size_bytes(), 1024);
         assert_eq!(file_metadata.modified_at(), 1_710_000_000);
+        assert_eq!(file_metadata.file_hash(), "hash-1");
     }
 
     #[test]
@@ -96,6 +110,7 @@ mod tests {
             "/docs/report.pdf".to_string(),
             1024,
             1_710_000_000,
+            "hash-1".to_string(),
         );
 
         assert_eq!(file_metadata, Err(FileMetadataError::EmptyId));
@@ -109,6 +124,7 @@ mod tests {
             "/docs/report.pdf".to_string(),
             1024,
             1_710_000_000,
+            "hash-1".to_string(),
         );
 
         assert_eq!(file_metadata, Err(FileMetadataError::EmptyName));
@@ -122,8 +138,23 @@ mod tests {
             "   ".to_string(),
             1024,
             1_710_000_000,
+            "hash-1".to_string(),
         );
 
         assert_eq!(file_metadata, Err(FileMetadataError::EmptyFilePath));
+    }
+
+    #[test]
+    fn returns_error_when_file_hash_is_empty() {
+        let file_metadata = FileMetadata::new(
+            "file-1".to_string(),
+            "report.pdf".to_string(),
+            "/docs/report.pdf".to_string(),
+            1024,
+            1_710_000_000,
+            "   ".to_string(),
+        );
+
+        assert_eq!(file_metadata, Err(FileMetadataError::EmptyFileHash));
     }
 }
