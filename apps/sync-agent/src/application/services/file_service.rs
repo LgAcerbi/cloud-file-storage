@@ -1,6 +1,6 @@
 use crate::application::ports::file_blob_repository::{FileBlobMetadata, FileBlobRepository};
 use crate::application::ports::file_metadata_repository::FileMetadataRepository;
-use crate::application::ports::file_remote_gateway::FileRemoteGateway;
+use crate::application::ports::file_remote_gateway::{FileRemoteGateway, FileRemoteGatewayError};
 use crate::domain::entities::file_metadata::FileMetadata;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8,6 +8,7 @@ pub enum FileServiceError {
     FileBlobNotFound,
     FileBlobMetadataNotFound,
     FileBlobHashNotFound,
+    RemoteGateway(FileRemoteGatewayError),
 }
 
 pub struct FileService<TFileMetadataRepository, TFileBlobRepository, TFileRemoteGateway>
@@ -91,16 +92,23 @@ where
         let is_changed = self.should_update_by_metadata(file_metadata, file_blob_metadata);
 
         if is_changed && self.should_update_by_hash(file_path, file_metadata)? {
-            self.file_remote_gateway.update_file(file_metadata.id(), file_blob);
+            let _updated_file_metadata = self
+                .file_remote_gateway
+                .update_file(file_metadata.id(), file_blob)
+                .map_err(FileServiceError::RemoteGateway)?;
         }
 
         Ok(())
     }
 
-    fn sync_new_remote(&self, file_blob: Vec<u8>) {
-        let uploaded_file_metadata = self.file_remote_gateway.upload_file(file_blob);
+    fn sync_new_remote(&self, file_blob: Vec<u8>) -> Result<(), FileServiceError> {
+        let uploaded_file_metadata = self
+            .file_remote_gateway
+            .upload_file(file_blob)
+            .map_err(FileServiceError::RemoteGateway)?;
         self.file_metadata_repository
             .create_file_metadata(uploaded_file_metadata);
+        Ok(())
     }
 
     pub fn sync_local_changes_to_remote(&self, file_path: &str) -> Result<(), FileServiceError> {
@@ -111,7 +119,7 @@ where
             Some(file_metadata) => {
                 self.sync_existing_remote(file_path, file_blob, &file_blob_metadata, &file_metadata)?
             }
-            None => self.sync_new_remote(file_blob),
+            None => self.sync_new_remote(file_blob)?,
         }
 
         Ok(())
@@ -123,7 +131,7 @@ mod tests {
     use super::{FileService, FileServiceError};
     use crate::application::ports::file_blob_repository::{FileBlobMetadata, FileBlobRepository};
     use crate::application::ports::file_metadata_repository::FileMetadataRepository;
-    use crate::application::ports::file_remote_gateway::FileRemoteGateway;
+    use crate::application::ports::file_remote_gateway::{FileRemoteGateway, FileRemoteGatewayError};
     use crate::domain::entities::file_metadata::FileMetadata;
     use std::cell::RefCell;
 
@@ -179,6 +187,8 @@ mod tests {
     struct InMemoryFileRemoteGateway {
         calls: RefCell<Vec<RemoteCall>>,
         upload_response: FileMetadata,
+        upload_error: Option<FileRemoteGatewayError>,
+        update_error: Option<FileRemoteGatewayError>,
     }
 
     impl InMemoryFileRemoteGateway {
@@ -186,6 +196,8 @@ mod tests {
             Self {
                 calls: RefCell::new(Vec::new()),
                 upload_response,
+                upload_error: None,
+                update_error: None,
             }
         }
     }
@@ -195,16 +207,27 @@ mod tests {
             None
         }
 
-        fn upload_file(&self, file_blob: Vec<u8>) -> FileMetadata {
+        fn upload_file(&self, file_blob: Vec<u8>) -> Result<FileMetadata, FileRemoteGatewayError> {
+            if let Some(err) = &self.upload_error {
+                return Err(err.clone());
+            }
             self.calls.borrow_mut().push(RemoteCall::Upload { file_blob });
-            self.upload_response.clone()
+            Ok(self.upload_response.clone())
         }
 
-        fn update_file(&self, id: &str, file_blob: Vec<u8>) {
+        fn update_file(
+            &self,
+            id: &str,
+            file_blob: Vec<u8>,
+        ) -> Result<FileMetadata, FileRemoteGatewayError> {
+            if let Some(err) = &self.update_error {
+                return Err(err.clone());
+            }
             self.calls.borrow_mut().push(RemoteCall::Update {
                 id: id.to_string(),
                 file_blob,
             });
+            Ok(self.upload_response.clone())
         }
     }
 
@@ -384,5 +407,82 @@ mod tests {
         let result = service.sync_local_changes_to_remote("/docs/report.pdf");
 
         assert_eq!(result, Err(FileServiceError::FileBlobHashNotFound));
+    }
+
+    #[test]
+    fn returns_error_when_remote_upload_fails_and_does_not_persist_metadata() {
+        let uploaded_metadata = FileMetadata::new(
+            "file-2".to_string(),
+            "new-file.pdf".to_string(),
+            "/docs/new-file.pdf".to_string(),
+            2048,
+            1_730_000_000,
+            "hash-uploaded".to_string(),
+        )
+        .unwrap();
+        let metadata_repository = InMemoryFileMetadataRepository {
+            file_metadata: None,
+            created_file_metadata: RefCell::new(Vec::new()),
+        };
+        let blob_repository = InMemoryFileBlobRepository {
+            file_blob: Some(vec![4, 5, 6]),
+            file_blob_metadata: Some(FileBlobMetadata {
+                size_bytes: 2048,
+                modified_at: 1_730_000_000,
+            }),
+            file_blob_hash: Some("hash-uploaded".to_string()),
+        };
+        let mut remote_gateway = InMemoryFileRemoteGateway::new(uploaded_metadata);
+        remote_gateway.upload_error = Some(FileRemoteGatewayError::Timeout);
+
+        let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
+        let result = service.sync_local_changes_to_remote("/docs/new-file.pdf");
+
+        assert_eq!(
+            result,
+            Err(FileServiceError::RemoteGateway(
+                FileRemoteGatewayError::Timeout
+            ))
+        );
+        assert!(service.file_remote_gateway.calls.into_inner().is_empty());
+        assert!(service
+            .file_metadata_repository
+            .created_file_metadata
+            .into_inner()
+            .is_empty());
+    }
+
+    #[test]
+    fn returns_error_when_remote_update_fails_and_does_not_persist_metadata() {
+        let metadata_repository = InMemoryFileMetadataRepository {
+            file_metadata: Some(build_file_metadata()),
+            created_file_metadata: RefCell::new(Vec::new()),
+        };
+        let blob_repository = InMemoryFileBlobRepository {
+            file_blob: Some(vec![1, 2, 3]),
+            file_blob_metadata: Some(FileBlobMetadata {
+                size_bytes: 2048,
+                modified_at: 1_720_000_000,
+            }),
+            file_blob_hash: Some("hash-2".to_string()),
+        };
+        let mut remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
+        remote_gateway.update_error = Some(FileRemoteGatewayError::Network);
+
+        let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
+        let result = service.sync_local_changes_to_remote("/docs/report.pdf");
+
+        assert_eq!(
+            result,
+            Err(FileServiceError::RemoteGateway(
+                FileRemoteGatewayError::Network
+            ))
+        );
+        assert!(service.file_remote_gateway.calls.into_inner().is_empty());
+        assert!(service
+            .file_metadata_repository
+            .created_file_metadata
+            .into_inner()
+            .is_empty());
     }
 }
