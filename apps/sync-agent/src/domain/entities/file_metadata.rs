@@ -4,6 +4,7 @@ pub struct FileMetadata {
     name: String,
     file_path: String,
     size_bytes: u64,
+    modified_at: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,6 +20,7 @@ impl FileMetadata {
         name: String,
         file_path: String,
         size_bytes: u64,
+        modified_at: u64,
     ) -> Result<Self, FileMetadataError> {
         if id.trim().is_empty() {
             return Err(FileMetadataError::EmptyId);
@@ -37,6 +39,7 @@ impl FileMetadata {
             name,
             file_path,
             size_bytes,
+            modified_at,
         })
     }
 
@@ -55,6 +58,10 @@ impl FileMetadata {
     pub fn size_bytes(&self) -> u64 {
         self.size_bytes
     }
+
+    pub fn modified_at(&self) -> u64 {
+        self.modified_at
+    }
 }
 
 #[cfg(test)]
@@ -68,6 +75,7 @@ mod tests {
             "report.pdf".to_string(),
             "/docs/report.pdf".to_string(),
             1024,
+            1_710_000_000,
         );
 
         assert!(file_metadata.is_ok());
@@ -77,6 +85,7 @@ mod tests {
         assert_eq!(file_metadata.name(), "report.pdf");
         assert_eq!(file_metadata.file_path(), "/docs/report.pdf");
         assert_eq!(file_metadata.size_bytes(), 1024);
+        assert_eq!(file_metadata.modified_at(), 1_710_000_000);
     }
 
     #[test]
@@ -86,6 +95,7 @@ mod tests {
             "report.pdf".to_string(),
             "/docs/report.pdf".to_string(),
             1024,
+            1_710_000_000,
         );
 
         assert_eq!(file_metadata, Err(FileMetadataError::EmptyId));
@@ -98,6 +108,7 @@ mod tests {
             "   ".to_string(),
             "/docs/report.pdf".to_string(),
             1024,
+            1_710_000_000,
         );
 
         assert_eq!(file_metadata, Err(FileMetadataError::EmptyName));
@@ -110,6 +121,7 @@ mod tests {
             "report.pdf".to_string(),
             "   ".to_string(),
             1024,
+            1_710_000_000,
         );
 
         assert_eq!(file_metadata, Err(FileMetadataError::EmptyFilePath));
