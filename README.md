@@ -49,7 +49,6 @@ The platform should be designed as a set of cooperating services rather than a s
 
 ### In Scope for Initial Product
 
-- user accounts and authentication
 - personal file storage
 - folders and nested organization
 - upload and download
@@ -62,6 +61,12 @@ The platform should be designed as a set of cooperating services rather than a s
 - audit and activity logging
 - admin observability basics
 
+### Deferred Until Final Phase
+
+- user accounts and authentication
+- role and permission hardening
+- advanced admin controls tied to identity governance
+
 ### Out of Scope for First Release
 
 - collaborative document editing
@@ -72,7 +77,7 @@ The platform should be designed as a set of cooperating services rather than a s
 
 ## Functional Requirements
 
-### 1. Identity and Access
+### 1. Identity and Access (Final Phase)
 
 - Users can register, sign in, sign out, and reset passwords.
 - The system supports roles such as user, admin, and support operator.
@@ -127,6 +132,10 @@ The platform should be designed as a set of cooperating services rather than a s
 - Admins can view system health, storage usage, user activity, and failed jobs.
 - Admins can suspend users, revoke shares, and inspect audit history.
 - System must emit logs, metrics, and traces suitable for production monitoring.
+
+Planning priority note:
+
+- identity and full user management are intentionally implemented last to keep the primary focus on object/blob storage and OS-level sync expertise.
 
 ## Non-Functional Requirements
 
@@ -324,12 +333,10 @@ Suggested repo shape:
 - `docs/` for ADRs, API contracts, and operational docs
 - `infra/` for deployment and provisioning
 
-### Phase 2: Auth and Metadata MVP
+### Phase 2: Metadata and Object Model MVP
 
 Deliverables:
 
-- authentication and authorization
-- user and account model
 - folder tree management
 - metadata CRUD for files and folders
 - audit log foundation
@@ -337,7 +344,7 @@ Deliverables:
 
 Success criteria:
 
-- authenticated users can create folders and manage metadata without object upload yet
+- the system can manage folders and metadata for storage objects without full identity features
 
 ### Phase 3: Upload and Download MVP
 
@@ -399,7 +406,7 @@ Success criteria:
 
 - sync behavior remains stable under real-world interruption scenarios
 
-### Phase 7: Operations and Production Readiness
+### Phase 7: Operations, Production Readiness, and User Management
 
 Deliverables:
 
@@ -409,10 +416,13 @@ Deliverables:
 - backup and restore playbooks
 - security hardening
 - performance and load testing
+- authentication and authorization
+- user and account model
+- role-based access control hardening
 
 Success criteria:
 
-- system can be operated safely in a production environment
+- system can be operated safely in production with full identity and access controls enabled
 
 ## Team and Role Planning
 
@@ -448,7 +458,7 @@ Mitigations:
 5. Integrate object storage upload and download.
 6. Add sharing and versioning.
 7. Deliver Rust-based sync agent prototype.
-8. Harden for production.
+8. Finalize user/auth management and production hardening.
 
 ## Decisions Needed Before Coding
 
