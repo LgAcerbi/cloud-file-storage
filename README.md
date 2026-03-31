@@ -22,12 +22,12 @@ Build a secure, scalable platform that allows users and teams to:
 ### Required Languages
 
 - `Rust` for operating system and filesystem interaction
-- `TypeScript` for REST APIs and service orchestration
+- `Java` for REST APIs and service orchestration
 
 ### Why This Split
 
 - `Rust` is well suited for efficient, safe interaction with filesystems, local agents, background sync logic, metadata scanning, chunking, hashing, and other performance-sensitive operations.
-- `TypeScript` is productive for HTTP APIs, authentication flows, admin endpoints, metadata services, sharing features, and integration with frontend/web clients.
+- `Java` is well supported for HTTP APIs on the JVM, with mature libraries for authentication, admin endpoints, metadata services, sharing features, and integration with any client (web, desktop, or mobile) that consumes REST.
 
 ## High-Level System Concept
 
@@ -35,9 +35,9 @@ The platform should be designed as a set of cooperating services rather than a s
 
 ### Core Building Blocks
 
-1. `API Gateway / REST API` in TypeScript
-2. `Auth and Identity Service` in TypeScript
-3. `Metadata Service` in TypeScript
+1. `API Gateway / REST API` in Java
+2. `Auth and Identity Service` in Java
+3. `Metadata Service` in Java
 4. `Object Storage Layer` backed by cloud blob/object storage
 5. `Sync/Agent Service` or local sync client logic in Rust
 6. `OS Interaction Layer` in Rust for filesystem watching and local file operations
@@ -161,14 +161,14 @@ The platform should be designed as a set of cooperating services rather than a s
 
 ### Maintainability
 
-- Keep Rust and TypeScript boundaries explicit.
+- Keep Rust and Java boundaries explicit.
 - Prefer contract-based interfaces between services.
 - Maintain strong API schemas and event definitions.
 - Document data lifecycle and sync behavior clearly.
 
 ## Proposed Architecture
 
-### API Layer in TypeScript
+### API Layer in Java
 
 Responsibilities:
 
@@ -179,7 +179,7 @@ Responsibilities:
 - issue upload sessions and pre-signed object storage URLs
 - manage sharing, permissions, and admin workflows
 
-Suggested modules:
+Suggested bounded contexts or packages (Spring modules or plain Java packages, depending on layout):
 
 - auth
 - users
@@ -309,16 +309,16 @@ Open questions to resolve:
 Deliverables:
 
 - monorepo structure
-- TypeScript API service skeleton
+- Java API service skeleton (for example Maven or Gradle)
 - Rust workspace skeleton
-- shared API contracts and schemas
+- shared API contracts and schemas (OpenAPI, protobuf, or similar)
 - local development environment
 - CI pipeline
 - formatting, linting, testing, and release standards
 
 Suggested repo shape:
 
-- `apps/api` for TypeScript REST APIs
+- `services/api` or `apps/api` for Java REST APIs
 - `services/metadata` if split later
 - `rust/` or `crates/` for Rust libraries and agents
 - `docs/` for ADRs, API contracts, and operational docs
@@ -418,7 +418,7 @@ Success criteria:
 
 Suggested workstreams:
 
-- backend/API team for TypeScript services
+- backend/API team for Java services
 - storage and data team for object integration and metadata design
 - Rust/sync team for local agent and OS interaction
 - platform team for CI/CD, infra, observability, and security
@@ -436,7 +436,7 @@ Mitigations:
 
 - define invariants early
 - build end-to-end vertical slices before broad feature expansion
-- keep contracts explicit between Rust and TypeScript components
+- keep contracts explicit between Rust and Java components
 - prioritize auditability and idempotency
 
 ## Initial Milestones
