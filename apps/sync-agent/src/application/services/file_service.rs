@@ -1,6 +1,7 @@
+use crate::application::ports::file_blob_repository::{FileBlobMetadata, FileBlobRepository};
 use crate::application::ports::file_metadata_repository::FileMetadataRepository;
-use crate::application::ports::file_blob_repository::FileBlobRepository;
 use crate::application::ports::file_remote_gateway::FileRemoteGateway;
+use crate::domain::entities::file_metadata::FileMetadata;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileServiceError {
@@ -39,42 +40,78 @@ where
         }
     }
 
-    pub fn sync_local_changes_to_remote(&self, file_path: &str) -> Result<(), FileServiceError> {
-        let file_blob = self
-            .file_blob_repository
+    fn load_local_blob(&self, file_path: &str) -> Result<Vec<u8>, FileServiceError> {
+        self.file_blob_repository
             .get_file_blob_by_path(file_path)
-            .ok_or(FileServiceError::FileBlobNotFound)?;
-            
+            .ok_or(FileServiceError::FileBlobNotFound)
+    }
+
+    fn load_local_snapshot(
+        &self,
+        file_path: &str,
+    ) -> Result<(FileBlobMetadata, Option<FileMetadata>), FileServiceError> {
         let file_blob_metadata = self
             .file_blob_repository
             .get_file_blob_metadata_by_path(file_path)
             .ok_or(FileServiceError::FileBlobMetadataNotFound)?;
+        let file_metadata = self.file_metadata_repository.get_file_metadata_by_path(file_path);
 
-        let file_metadata = self
-            .file_metadata_repository
-            .get_file_metadata_by_path(file_path);
+        Ok((file_blob_metadata, file_metadata))
+    }
+
+    fn should_update_by_metadata(
+        &self,
+        file_metadata: &FileMetadata,
+        file_blob_metadata: &FileBlobMetadata,
+    ) -> bool {
+        file_metadata.size_bytes() != file_blob_metadata.size_bytes
+            || file_metadata.modified_at() != file_blob_metadata.modified_at
+    }
+
+    fn should_update_by_hash(
+        &self,
+        file_path: &str,
+        file_metadata: &FileMetadata,
+    ) -> Result<bool, FileServiceError> {
+        let local_file_hash = self
+            .file_blob_repository
+            .get_file_blob_hash_by_path(file_path)
+            .ok_or(FileServiceError::FileBlobHashNotFound)?;
+
+        Ok(local_file_hash != file_metadata.file_hash())
+    }
+
+    fn sync_existing_remote(
+        &self,
+        file_path: &str,
+        file_blob: Vec<u8>,
+        file_blob_metadata: &FileBlobMetadata,
+        file_metadata: &FileMetadata,
+    ) -> Result<(), FileServiceError> {
+        let is_changed = self.should_update_by_metadata(file_metadata, file_blob_metadata);
+
+        if is_changed && self.should_update_by_hash(file_path, file_metadata)? {
+            self.file_remote_gateway.update_file(file_metadata.id(), file_blob);
+        }
+
+        Ok(())
+    }
+
+    fn sync_new_remote(&self, file_blob: Vec<u8>) {
+        let uploaded_file_metadata = self.file_remote_gateway.upload_file(file_blob);
+        self.file_metadata_repository
+            .create_file_metadata(uploaded_file_metadata);
+    }
+
+    pub fn sync_local_changes_to_remote(&self, file_path: &str) -> Result<(), FileServiceError> {
+        let file_blob = self.load_local_blob(file_path)?;
+        let (file_blob_metadata, file_metadata) = self.load_local_snapshot(file_path)?;
 
         match file_metadata {
             Some(file_metadata) => {
-                let is_changed = file_metadata.size_bytes() != file_blob_metadata.size_bytes
-                    || file_metadata.modified_at() != file_blob_metadata.modified_at;
-
-                if is_changed {
-                    let local_file_hash = self
-                        .file_blob_repository
-                        .get_file_blob_hash_by_path(file_path)
-                        .ok_or(FileServiceError::FileBlobHashNotFound)?;
-
-                    if local_file_hash != file_metadata.file_hash() {
-                        self.file_remote_gateway.update_file(file_metadata.id(), file_blob);
-                    }
-                }
+                self.sync_existing_remote(file_path, file_blob, &file_blob_metadata, &file_metadata)?
             }
-            None => {
-                let uploaded_file_metadata = self.file_remote_gateway.upload_file(file_blob);
-                self.file_metadata_repository
-                    .create_file_metadata(uploaded_file_metadata);
-            }
+            None => self.sync_new_remote(file_blob),
         }
 
         Ok(())
