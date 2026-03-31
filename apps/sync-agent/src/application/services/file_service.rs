@@ -6,6 +6,7 @@ use crate::application::ports::file_remote_gateway::FileRemoteGateway;
 pub enum FileServiceError {
     FileBlobNotFound,
     FileBlobMetadataNotFound,
+    FileBlobHashNotFound,
 }
 
 pub struct FileService<TFileMetadataRepository, TFileBlobRepository, TFileRemoteGateway>
@@ -59,7 +60,14 @@ where
                     || file_metadata.modified_at() != file_blob_metadata.modified_at;
 
                 if is_changed {
-                    self.file_remote_gateway.update_file(file_metadata.id(), file_blob);
+                    let local_file_hash = self
+                        .file_blob_repository
+                        .get_file_blob_hash_by_path(file_path)
+                        .ok_or(FileServiceError::FileBlobHashNotFound)?;
+
+                    if local_file_hash != file_metadata.file_hash() {
+                        self.file_remote_gateway.update_file(file_metadata.id(), file_blob);
+                    }
                 }
             }
             None => {
@@ -104,6 +112,7 @@ mod tests {
     struct InMemoryFileBlobRepository {
         file_blob: Option<Vec<u8>>,
         file_blob_metadata: Option<FileBlobMetadata>,
+        file_blob_hash: Option<String>,
     }
 
     impl FileBlobRepository for InMemoryFileBlobRepository {
@@ -117,6 +126,10 @@ mod tests {
 
         fn get_file_blob_metadata_by_path(&self, _file_path: &str) -> Option<FileBlobMetadata> {
             self.file_blob_metadata.clone()
+        }
+
+        fn get_file_blob_hash_by_path(&self, _file_path: &str) -> Option<String> {
+            self.file_blob_hash.clone()
         }
     }
 
@@ -165,6 +178,7 @@ mod tests {
             "/docs/report.pdf".to_string(),
             1024,
             1_710_000_000,
+            "hash-1".to_string(),
         )
         .unwrap()
     }
@@ -178,6 +192,7 @@ mod tests {
         let blob_repository = InMemoryFileBlobRepository {
             file_blob: None,
             file_blob_metadata: None,
+            file_blob_hash: None,
         };
         let remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
         let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
@@ -199,6 +214,7 @@ mod tests {
                 size_bytes: 2048,
                 modified_at: 1_720_000_000,
             }),
+            file_blob_hash: Some("hash-2".to_string()),
         };
         let remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
 
@@ -228,6 +244,7 @@ mod tests {
             "/docs/new-file.pdf".to_string(),
             2048,
             1_730_000_000,
+            "hash-uploaded".to_string(),
         )
         .unwrap();
         let metadata_repository = InMemoryFileMetadataRepository {
@@ -240,6 +257,7 @@ mod tests {
                 size_bytes: 2048,
                 modified_at: 1_730_000_000,
             }),
+            file_blob_hash: Some("hash-uploaded".to_string()),
         };
         let remote_gateway = InMemoryFileRemoteGateway::new(uploaded_metadata.clone());
 
@@ -275,6 +293,7 @@ mod tests {
                 size_bytes: 1024,
                 modified_at: 1_710_000_000,
             }),
+            file_blob_hash: Some("hash-1".to_string()),
         };
         let remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
 
@@ -283,5 +302,50 @@ mod tests {
 
         assert_eq!(result, Ok(()));
         assert!(service.file_remote_gateway.calls.into_inner().is_empty());
+    }
+
+    #[test]
+    fn does_not_update_remote_file_when_hash_matches_after_metadata_change_detection() {
+        let metadata_repository = InMemoryFileMetadataRepository {
+            file_metadata: Some(build_file_metadata()),
+            created_file_metadata: RefCell::new(Vec::new()),
+        };
+        let blob_repository = InMemoryFileBlobRepository {
+            file_blob: Some(vec![1, 2, 3]),
+            file_blob_metadata: Some(FileBlobMetadata {
+                size_bytes: 2048,
+                modified_at: 1_720_000_000,
+            }),
+            file_blob_hash: Some("hash-1".to_string()),
+        };
+        let remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
+
+        let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
+        let result = service.sync_local_changes_to_remote("/docs/report.pdf");
+
+        assert_eq!(result, Ok(()));
+        assert!(service.file_remote_gateway.calls.into_inner().is_empty());
+    }
+
+    #[test]
+    fn returns_error_when_hash_is_needed_but_not_found() {
+        let metadata_repository = InMemoryFileMetadataRepository {
+            file_metadata: Some(build_file_metadata()),
+            created_file_metadata: RefCell::new(Vec::new()),
+        };
+        let blob_repository = InMemoryFileBlobRepository {
+            file_blob: Some(vec![1, 2, 3]),
+            file_blob_metadata: Some(FileBlobMetadata {
+                size_bytes: 2048,
+                modified_at: 1_720_000_000,
+            }),
+            file_blob_hash: None,
+        };
+        let remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
+
+        let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
+        let result = service.sync_local_changes_to_remote("/docs/report.pdf");
+
+        assert_eq!(result, Err(FileServiceError::FileBlobHashNotFound));
     }
 }
