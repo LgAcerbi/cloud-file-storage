@@ -1,3 +1,3 @@
 pub trait FileBlobRepository {
-    fn exists_by_file_id(&self, file_id: &str) -> bool;
+    fn exists_file_blob_by_id(&self, file_id: &str) -> bool;
 }
