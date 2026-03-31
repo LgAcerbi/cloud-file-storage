@@ -49,7 +49,11 @@ where
 
         match file_metadata {
             Some(file_metadata) => self.file_remote_gateway.update_file(file_metadata.id(), file_blob),
-            None => self.file_remote_gateway.upload_file(file_blob),
+            None => {
+                let uploaded_file_metadata = self.file_remote_gateway.upload_file(file_blob);
+                self.file_metadata_repository
+                    .create_file_metadata(uploaded_file_metadata);
+            }
         }
 
         Ok(())
@@ -67,9 +71,14 @@ mod tests {
 
     struct InMemoryFileMetadataRepository {
         file_metadata: Option<FileMetadata>,
+        created_file_metadata: RefCell<Vec<FileMetadata>>,
     }
 
     impl FileMetadataRepository for InMemoryFileMetadataRepository {
+        fn create_file_metadata(&self, file_metadata: FileMetadata) {
+            self.created_file_metadata.borrow_mut().push(file_metadata);
+        }
+
         fn get_file_metadata_by_id(&self, _id: &str) -> Option<FileMetadata> {
             self.file_metadata.clone()
         }
@@ -101,12 +110,14 @@ mod tests {
 
     struct InMemoryFileRemoteGateway {
         calls: RefCell<Vec<RemoteCall>>,
+        upload_response: FileMetadata,
     }
 
     impl InMemoryFileRemoteGateway {
-        fn new() -> Self {
+        fn new(upload_response: FileMetadata) -> Self {
             Self {
                 calls: RefCell::new(Vec::new()),
+                upload_response,
             }
         }
     }
@@ -116,8 +127,9 @@ mod tests {
             None
         }
 
-        fn upload_file(&self, file_blob: Vec<u8>) {
+        fn upload_file(&self, file_blob: Vec<u8>) -> FileMetadata {
             self.calls.borrow_mut().push(RemoteCall::Upload { file_blob });
+            self.upload_response.clone()
         }
 
         fn update_file(&self, id: &str, file_blob: Vec<u8>) {
@@ -142,9 +154,10 @@ mod tests {
     fn returns_error_when_file_blob_is_not_found_by_path() {
         let metadata_repository = InMemoryFileMetadataRepository {
             file_metadata: Some(build_file_metadata()),
+            created_file_metadata: RefCell::new(Vec::new()),
         };
         let blob_repository = InMemoryFileBlobRepository { file_blob: None };
-        let remote_gateway = InMemoryFileRemoteGateway::new();
+        let remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
         let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
 
         let result = service.sync_local_changes_to_remote("/docs/missing.pdf");
@@ -156,11 +169,12 @@ mod tests {
     fn updates_remote_file_when_metadata_exists() {
         let metadata_repository = InMemoryFileMetadataRepository {
             file_metadata: Some(build_file_metadata()),
+            created_file_metadata: RefCell::new(Vec::new()),
         };
         let blob_repository = InMemoryFileBlobRepository {
             file_blob: Some(vec![1, 2, 3]),
         };
-        let remote_gateway = InMemoryFileRemoteGateway::new();
+        let remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
 
         let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
         let result = service.sync_local_changes_to_remote("/docs/report.pdf");
@@ -173,17 +187,30 @@ mod tests {
                 file_blob: vec![1, 2, 3],
             }]
         );
+        assert!(service
+            .file_metadata_repository
+            .created_file_metadata
+            .into_inner()
+            .is_empty());
     }
 
     #[test]
     fn uploads_remote_file_when_metadata_does_not_exist() {
+        let uploaded_metadata = FileMetadata::new(
+            "file-2".to_string(),
+            "new-file.pdf".to_string(),
+            "/docs/new-file.pdf".to_string(),
+            2048,
+        )
+        .unwrap();
         let metadata_repository = InMemoryFileMetadataRepository {
             file_metadata: None,
+            created_file_metadata: RefCell::new(Vec::new()),
         };
         let blob_repository = InMemoryFileBlobRepository {
             file_blob: Some(vec![4, 5, 6]),
         };
-        let remote_gateway = InMemoryFileRemoteGateway::new();
+        let remote_gateway = InMemoryFileRemoteGateway::new(uploaded_metadata.clone());
 
         let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
 
@@ -195,6 +222,13 @@ mod tests {
             vec![RemoteCall::Upload {
                 file_blob: vec![4, 5, 6],
             }]
+        );
+        assert_eq!(
+            service
+                .file_metadata_repository
+                .created_file_metadata
+                .into_inner(),
+            vec![uploaded_metadata]
         );
     }
 }
