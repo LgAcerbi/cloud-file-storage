@@ -8,6 +8,7 @@ pub enum FileServiceError {
     FileBlobNotFound,
     FileBlobMetadataNotFound,
     FileBlobHashNotFound,
+    InvalidFilePath,
     RemoteGateway(FileRemoteGatewayError),
     InvalidFileMetadata(FileMetadataError),
 }
@@ -46,6 +47,15 @@ where
         self.file_blob_repository
             .get_file_blob_by_path(file_path)
             .ok_or(FileServiceError::FileBlobNotFound)
+    }
+
+    fn normalize_file_path(&self, file_path: &str) -> Result<String, FileServiceError> {
+        let trimmed = file_path.trim();
+        if trimmed.is_empty() {
+            return Err(FileServiceError::InvalidFilePath);
+        }
+
+        Ok(trimmed.replace('\\', "/"))
     }
 
     fn load_local_snapshot(
@@ -129,12 +139,18 @@ where
     }
 
     pub fn sync_local_changes_to_remote(&self, file_path: &str) -> Result<(), FileServiceError> {
-        let file_blob = self.load_local_blob(file_path)?;
-        let (file_blob_metadata, file_metadata) = self.load_local_snapshot(file_path)?;
+        let normalized_file_path = self.normalize_file_path(file_path)?;
+        let file_blob = self.load_local_blob(&normalized_file_path)?;
+        let (file_blob_metadata, file_metadata) = self.load_local_snapshot(&normalized_file_path)?;
 
         match file_metadata {
             Some(file_metadata) => {
-                self.sync_existing_remote(file_path, file_blob, &file_blob_metadata, &file_metadata)?
+                self.sync_existing_remote(
+                    &normalized_file_path,
+                    file_blob,
+                    &file_blob_metadata,
+                    &file_metadata,
+                )?
             }
             None => self.sync_new_remote(file_blob)?,
         }
@@ -156,6 +172,7 @@ mod tests {
         file_metadata: Option<FileMetadata>,
         created_file_metadata: RefCell<Vec<FileMetadata>>,
         updated_file_metadata: RefCell<Vec<FileMetadata>>,
+        last_get_by_path: RefCell<Option<String>>,
     }
 
     impl FileMetadataRepository for InMemoryFileMetadataRepository {
@@ -171,7 +188,10 @@ mod tests {
             self.file_metadata.clone()
         }
 
-        fn get_file_metadata_by_path(&self, _file_path: &str) -> Option<FileMetadata> {
+        fn get_file_metadata_by_path(&self, file_path: &str) -> Option<FileMetadata> {
+            self.last_get_by_path
+                .borrow_mut()
+                .replace(file_path.to_string());
             self.file_metadata.clone()
         }
     }
@@ -180,6 +200,9 @@ mod tests {
         file_blob: Option<Vec<u8>>,
         file_blob_metadata: Option<FileBlobMetadata>,
         file_blob_hash: Option<String>,
+        last_blob_path: RefCell<Option<String>>,
+        last_blob_metadata_path: RefCell<Option<String>>,
+        last_blob_hash_path: RefCell<Option<String>>,
     }
 
     impl FileBlobRepository for InMemoryFileBlobRepository {
@@ -187,15 +210,22 @@ mod tests {
             self.file_blob.is_some()
         }
 
-        fn get_file_blob_by_path(&self, _file_path: &str) -> Option<Vec<u8>> {
+        fn get_file_blob_by_path(&self, file_path: &str) -> Option<Vec<u8>> {
+            self.last_blob_path.borrow_mut().replace(file_path.to_string());
             self.file_blob.clone()
         }
 
-        fn get_file_blob_metadata_by_path(&self, _file_path: &str) -> Option<FileBlobMetadata> {
+        fn get_file_blob_metadata_by_path(&self, file_path: &str) -> Option<FileBlobMetadata> {
+            self.last_blob_metadata_path
+                .borrow_mut()
+                .replace(file_path.to_string());
             self.file_blob_metadata.clone()
         }
 
-        fn get_file_blob_hash_by_path(&self, _file_path: &str) -> Option<String> {
+        fn get_file_blob_hash_by_path(&self, file_path: &str) -> Option<String> {
+            self.last_blob_hash_path
+                .borrow_mut()
+                .replace(file_path.to_string());
             self.file_blob_hash.clone()
         }
     }
@@ -278,11 +308,15 @@ mod tests {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
             updated_file_metadata: RefCell::new(Vec::new()),
+            last_get_by_path: RefCell::new(None),
         };
         let blob_repository = InMemoryFileBlobRepository {
             file_blob: None,
             file_blob_metadata: None,
             file_blob_hash: None,
+            last_blob_path: RefCell::new(None),
+            last_blob_metadata_path: RefCell::new(None),
+            last_blob_hash_path: RefCell::new(None),
         };
         let remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
         let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
@@ -308,6 +342,7 @@ mod tests {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
             updated_file_metadata: RefCell::new(Vec::new()),
+            last_get_by_path: RefCell::new(None),
         };
         let blob_repository = InMemoryFileBlobRepository {
             file_blob: Some(vec![1, 2, 3]),
@@ -316,6 +351,9 @@ mod tests {
                 modified_at: 1_720_000_000,
             }),
             file_blob_hash: Some("hash-2".to_string()),
+            last_blob_path: RefCell::new(None),
+            last_blob_metadata_path: RefCell::new(None),
+            last_blob_hash_path: RefCell::new(None),
         };
         let remote_gateway = InMemoryFileRemoteGateway::new(remote_updated_metadata);
 
@@ -370,6 +408,7 @@ mod tests {
             file_metadata: None,
             created_file_metadata: RefCell::new(Vec::new()),
             updated_file_metadata: RefCell::new(Vec::new()),
+            last_get_by_path: RefCell::new(None),
         };
         let blob_repository = InMemoryFileBlobRepository {
             file_blob: Some(vec![4, 5, 6]),
@@ -378,6 +417,9 @@ mod tests {
                 modified_at: 1_730_000_000,
             }),
             file_blob_hash: Some("hash-uploaded".to_string()),
+            last_blob_path: RefCell::new(None),
+            last_blob_metadata_path: RefCell::new(None),
+            last_blob_hash_path: RefCell::new(None),
         };
         let remote_gateway = InMemoryFileRemoteGateway::new(uploaded_metadata.clone());
 
@@ -412,6 +454,7 @@ mod tests {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
             updated_file_metadata: RefCell::new(Vec::new()),
+            last_get_by_path: RefCell::new(None),
         };
         let blob_repository = InMemoryFileBlobRepository {
             file_blob: Some(vec![1, 2, 3]),
@@ -420,6 +463,9 @@ mod tests {
                 modified_at: 1_710_000_000,
             }),
             file_blob_hash: Some("hash-1".to_string()),
+            last_blob_path: RefCell::new(None),
+            last_blob_metadata_path: RefCell::new(None),
+            last_blob_hash_path: RefCell::new(None),
         };
         let remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
 
@@ -441,6 +487,7 @@ mod tests {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
             updated_file_metadata: RefCell::new(Vec::new()),
+            last_get_by_path: RefCell::new(None),
         };
         let blob_repository = InMemoryFileBlobRepository {
             file_blob: Some(vec![1, 2, 3]),
@@ -449,6 +496,9 @@ mod tests {
                 modified_at: 1_720_000_000,
             }),
             file_blob_hash: Some("hash-1".to_string()),
+            last_blob_path: RefCell::new(None),
+            last_blob_metadata_path: RefCell::new(None),
+            last_blob_hash_path: RefCell::new(None),
         };
         let remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
 
@@ -470,6 +520,7 @@ mod tests {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
             updated_file_metadata: RefCell::new(Vec::new()),
+            last_get_by_path: RefCell::new(None),
         };
         let blob_repository = InMemoryFileBlobRepository {
             file_blob: Some(vec![1, 2, 3]),
@@ -478,6 +529,9 @@ mod tests {
                 modified_at: 1_720_000_000,
             }),
             file_blob_hash: None,
+            last_blob_path: RefCell::new(None),
+            last_blob_metadata_path: RefCell::new(None),
+            last_blob_hash_path: RefCell::new(None),
         };
         let remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
 
@@ -503,6 +557,7 @@ mod tests {
             file_metadata: None,
             created_file_metadata: RefCell::new(Vec::new()),
             updated_file_metadata: RefCell::new(Vec::new()),
+            last_get_by_path: RefCell::new(None),
         };
         let blob_repository = InMemoryFileBlobRepository {
             file_blob: Some(vec![4, 5, 6]),
@@ -511,6 +566,9 @@ mod tests {
                 modified_at: 1_730_000_000,
             }),
             file_blob_hash: Some("hash-uploaded".to_string()),
+            last_blob_path: RefCell::new(None),
+            last_blob_metadata_path: RefCell::new(None),
+            last_blob_hash_path: RefCell::new(None),
         };
         let mut remote_gateway = InMemoryFileRemoteGateway::new(uploaded_metadata);
         remote_gateway.upload_error = Some(FileRemoteGatewayError::Timeout);
@@ -543,6 +601,7 @@ mod tests {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
             updated_file_metadata: RefCell::new(Vec::new()),
+            last_get_by_path: RefCell::new(None),
         };
         let blob_repository = InMemoryFileBlobRepository {
             file_blob: Some(vec![1, 2, 3]),
@@ -551,6 +610,9 @@ mod tests {
                 modified_at: 1_720_000_000,
             }),
             file_blob_hash: Some("hash-2".to_string()),
+            last_blob_path: RefCell::new(None),
+            last_blob_metadata_path: RefCell::new(None),
+            last_blob_hash_path: RefCell::new(None),
         };
         let mut remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
         remote_gateway.update_error = Some(FileRemoteGatewayError::Network);
@@ -583,6 +645,7 @@ mod tests {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
             updated_file_metadata: RefCell::new(Vec::new()),
+            last_get_by_path: RefCell::new(None),
         };
         let blob_repository = InMemoryFileBlobRepository {
             file_blob: Some(vec![1, 2, 3]),
@@ -591,6 +654,9 @@ mod tests {
                 modified_at: 1_720_000_000,
             }),
             file_blob_hash: Some("hash-2".to_string()),
+            last_blob_path: RefCell::new(None),
+            last_blob_metadata_path: RefCell::new(None),
+            last_blob_hash_path: RefCell::new(None),
         };
         let mut remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
         remote_gateway.update_error = Some(FileRemoteGatewayError::Conflict);
@@ -609,5 +675,76 @@ mod tests {
             .updated_file_metadata
             .into_inner()
             .is_empty());
+    }
+
+    #[test]
+    fn returns_error_when_file_path_is_empty_or_whitespace() {
+        let metadata_repository = InMemoryFileMetadataRepository {
+            file_metadata: Some(build_file_metadata()),
+            created_file_metadata: RefCell::new(Vec::new()),
+            updated_file_metadata: RefCell::new(Vec::new()),
+            last_get_by_path: RefCell::new(None),
+        };
+        let blob_repository = InMemoryFileBlobRepository {
+            file_blob: Some(vec![1, 2, 3]),
+            file_blob_metadata: Some(FileBlobMetadata {
+                size_bytes: 2048,
+                modified_at: 1_720_000_000,
+            }),
+            file_blob_hash: Some("hash-2".to_string()),
+            last_blob_path: RefCell::new(None),
+            last_blob_metadata_path: RefCell::new(None),
+            last_blob_hash_path: RefCell::new(None),
+        };
+        let remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
+        let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
+
+        let empty_result = service.sync_local_changes_to_remote("");
+        let whitespace_result = service.sync_local_changes_to_remote("   ");
+
+        assert_eq!(empty_result, Err(FileServiceError::InvalidFilePath));
+        assert_eq!(whitespace_result, Err(FileServiceError::InvalidFilePath));
+    }
+
+    #[test]
+    fn normalizes_windows_style_path_before_repository_calls() {
+        let metadata_repository = InMemoryFileMetadataRepository {
+            file_metadata: Some(build_file_metadata()),
+            created_file_metadata: RefCell::new(Vec::new()),
+            updated_file_metadata: RefCell::new(Vec::new()),
+            last_get_by_path: RefCell::new(None),
+        };
+        let blob_repository = InMemoryFileBlobRepository {
+            file_blob: Some(vec![1, 2, 3]),
+            file_blob_metadata: Some(FileBlobMetadata {
+                size_bytes: 2048,
+                modified_at: 1_720_000_000,
+            }),
+            file_blob_hash: Some("hash-2".to_string()),
+            last_blob_path: RefCell::new(None),
+            last_blob_metadata_path: RefCell::new(None),
+            last_blob_hash_path: RefCell::new(None),
+        };
+        let remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
+        let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
+
+        let _ = service.sync_local_changes_to_remote("  \\docs\\report.pdf  ");
+
+        assert_eq!(
+            service.file_blob_repository.last_blob_path.into_inner(),
+            Some("/docs/report.pdf".to_string())
+        );
+        assert_eq!(
+            service.file_blob_repository.last_blob_metadata_path.into_inner(),
+            Some("/docs/report.pdf".to_string())
+        );
+        assert_eq!(
+            service.file_blob_repository.last_blob_hash_path.into_inner(),
+            Some("/docs/report.pdf".to_string())
+        );
+        assert_eq!(
+            service.file_metadata_repository.last_get_by_path.into_inner(),
+            Some("/docs/report.pdf".to_string())
+        );
     }
 }
