@@ -97,9 +97,9 @@ where
                 return Ok(());
             }
 
-            let _updated_file_metadata = self
+            let updated_file_metadata = self
                 .file_remote_gateway
-                .update_file(file_metadata.id(), file_blob)
+                .update_file(file_metadata.id(), file_metadata.etag(), file_blob)
                 .map_err(FileServiceError::RemoteGateway)?;
             let refreshed_file_metadata = FileMetadata::new(
                 file_metadata.id().to_string(),
@@ -108,6 +108,7 @@ where
                 file_blob_metadata.size_bytes,
                 file_blob_metadata.modified_at,
                 local_file_hash,
+                updated_file_metadata.etag().to_string(),
             )
             .map_err(FileServiceError::InvalidFileMetadata)?;
             self.file_metadata_repository
@@ -202,7 +203,11 @@ mod tests {
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum RemoteCall {
         Upload { file_blob: Vec<u8> },
-        Update { id: String, file_blob: Vec<u8> },
+        Update {
+            id: String,
+            expected_etag: String,
+            file_blob: Vec<u8>,
+        },
     }
 
     struct InMemoryFileRemoteGateway {
@@ -239,6 +244,7 @@ mod tests {
         fn update_file(
             &self,
             id: &str,
+            expected_etag: &str,
             file_blob: Vec<u8>,
         ) -> Result<FileMetadata, FileRemoteGatewayError> {
             if let Some(err) = &self.update_error {
@@ -246,6 +252,7 @@ mod tests {
             }
             self.calls.borrow_mut().push(RemoteCall::Update {
                 id: id.to_string(),
+                expected_etag: expected_etag.to_string(),
                 file_blob,
             });
             Ok(self.upload_response.clone())
@@ -260,6 +267,7 @@ mod tests {
             1024,
             1_710_000_000,
             "hash-1".to_string(),
+            "etag-1".to_string(),
         )
         .unwrap()
     }
@@ -286,6 +294,16 @@ mod tests {
 
     #[test]
     fn updates_remote_file_when_metadata_exists() {
+        let remote_updated_metadata = FileMetadata::new(
+            "file-1".to_string(),
+            "report.pdf".to_string(),
+            "/docs/report.pdf".to_string(),
+            2048,
+            1_720_000_000,
+            "hash-2".to_string(),
+            "etag-2".to_string(),
+        )
+        .unwrap();
         let metadata_repository = InMemoryFileMetadataRepository {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
@@ -299,7 +317,7 @@ mod tests {
             }),
             file_blob_hash: Some("hash-2".to_string()),
         };
-        let remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
+        let remote_gateway = InMemoryFileRemoteGateway::new(remote_updated_metadata);
 
         let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
         let result = service.sync_local_changes_to_remote("/docs/report.pdf");
@@ -309,6 +327,7 @@ mod tests {
             service.file_remote_gateway.calls.into_inner(),
             vec![RemoteCall::Update {
                 id: "file-1".to_string(),
+                expected_etag: "etag-1".to_string(),
                 file_blob: vec![1, 2, 3],
             }]
         );
@@ -329,6 +348,7 @@ mod tests {
                 2048,
                 1_720_000_000,
                 "hash-2".to_string(),
+                "etag-2".to_string(),
             )
             .unwrap()]
         );
@@ -343,6 +363,7 @@ mod tests {
             2048,
             1_730_000_000,
             "hash-uploaded".to_string(),
+            "etag-uploaded".to_string(),
         )
         .unwrap();
         let metadata_repository = InMemoryFileMetadataRepository {
@@ -475,6 +496,7 @@ mod tests {
             2048,
             1_730_000_000,
             "hash-uploaded".to_string(),
+            "etag-uploaded".to_string(),
         )
         .unwrap();
         let metadata_repository = InMemoryFileMetadataRepository {
@@ -548,6 +570,40 @@ mod tests {
             .created_file_metadata
             .into_inner()
             .is_empty());
+        assert!(service
+            .file_metadata_repository
+            .updated_file_metadata
+            .into_inner()
+            .is_empty());
+    }
+
+    #[test]
+    fn returns_conflict_when_remote_etag_precondition_fails() {
+        let metadata_repository = InMemoryFileMetadataRepository {
+            file_metadata: Some(build_file_metadata()),
+            created_file_metadata: RefCell::new(Vec::new()),
+            updated_file_metadata: RefCell::new(Vec::new()),
+        };
+        let blob_repository = InMemoryFileBlobRepository {
+            file_blob: Some(vec![1, 2, 3]),
+            file_blob_metadata: Some(FileBlobMetadata {
+                size_bytes: 2048,
+                modified_at: 1_720_000_000,
+            }),
+            file_blob_hash: Some("hash-2".to_string()),
+        };
+        let mut remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
+        remote_gateway.update_error = Some(FileRemoteGatewayError::Conflict);
+
+        let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
+        let result = service.sync_local_changes_to_remote("/docs/report.pdf");
+
+        assert_eq!(
+            result,
+            Err(FileServiceError::RemoteGateway(
+                FileRemoteGatewayError::Conflict
+            ))
+        );
         assert!(service
             .file_metadata_repository
             .updated_file_metadata
