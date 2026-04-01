@@ -7,6 +7,7 @@ pub struct FileMetadata {
     modified_at: u64,
     file_hash: String,
     etag: String,
+    last_checked_at: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +57,7 @@ impl FileMetadata {
             modified_at,
             file_hash,
             etag,
+            last_checked_at: modified_at,
         })
     }
 
@@ -86,6 +88,16 @@ impl FileMetadata {
     pub fn etag(&self) -> &str {
         &self.etag
     }
+
+    pub fn last_checked_at(&self) -> u64 {
+        self.last_checked_at
+    }
+
+    pub fn with_last_checked_at(&self, last_checked_at: u64) -> Self {
+        let mut next = self.clone();
+        next.last_checked_at = last_checked_at;
+        next
+    }
 }
 
 #[cfg(test)]
@@ -114,6 +126,7 @@ mod tests {
         assert_eq!(file_metadata.modified_at(), 1_710_000_000);
         assert_eq!(file_metadata.file_hash(), "hash-1");
         assert_eq!(file_metadata.etag(), "etag-1");
+        assert_eq!(file_metadata.last_checked_at(), 1_710_000_000);
     }
 
     #[test]
