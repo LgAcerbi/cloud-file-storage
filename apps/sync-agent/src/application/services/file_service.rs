@@ -2,6 +2,7 @@ use crate::application::ports::file_blob_repository::{FileBlobMetadata, FileBlob
 use crate::application::ports::file_metadata_repository::FileMetadataRepository;
 use crate::application::ports::file_remote_gateway::{FileRemoteGateway, FileRemoteGatewayError};
 use crate::domain::entities::file_metadata::{FileMetadata, FileMetadataError};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileServiceError {
@@ -96,6 +97,7 @@ where
         file_metadata: &FileMetadata,
     ) -> Result<(), FileServiceError> {
         let is_changed = self.should_update_by_metadata(file_metadata, file_blob_metadata);
+        let checked_at = self.current_unix_timestamp();
 
         if is_changed {
             let local_file_hash = self
@@ -104,6 +106,8 @@ where
                 .ok_or(FileServiceError::FileBlobHashNotFound)?;
 
             if !self.should_update_by_hash(&local_file_hash, file_metadata) {
+                self.file_metadata_repository
+                    .update_file_metadata(file_metadata.with_last_checked_at(checked_at));
                 return Ok(());
             }
 
@@ -122,10 +126,20 @@ where
             )
             .map_err(FileServiceError::InvalidFileMetadata)?;
             self.file_metadata_repository
-                .update_file_metadata(refreshed_file_metadata);
+                .update_file_metadata(refreshed_file_metadata.with_last_checked_at(checked_at));
+        } else {
+            self.file_metadata_repository
+                .update_file_metadata(file_metadata.with_last_checked_at(checked_at));
         }
 
         Ok(())
+    }
+
+    fn current_unix_timestamp(&self) -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0)
     }
 
     fn sync_new_remote(&self, file_blob: Vec<u8>) -> Result<(), FileServiceError> {
@@ -474,11 +488,17 @@ mod tests {
 
         assert_eq!(result, Ok(()));
         assert!(service.file_remote_gateway.calls.into_inner().is_empty());
-        assert!(service
+        let updated = service
             .file_metadata_repository
             .updated_file_metadata
-            .into_inner()
-            .is_empty());
+            .into_inner();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].id(), "file-1");
+        assert_eq!(updated[0].size_bytes(), 1024);
+        assert_eq!(updated[0].modified_at(), 1_710_000_000);
+        assert_eq!(updated[0].file_hash(), "hash-1");
+        assert_eq!(updated[0].etag(), "etag-1");
+        assert!(updated[0].last_checked_at() > 0);
     }
 
     #[test]
@@ -507,11 +527,17 @@ mod tests {
 
         assert_eq!(result, Ok(()));
         assert!(service.file_remote_gateway.calls.into_inner().is_empty());
-        assert!(service
+        let updated = service
             .file_metadata_repository
             .updated_file_metadata
-            .into_inner()
-            .is_empty());
+            .into_inner();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].id(), "file-1");
+        assert_eq!(updated[0].size_bytes(), 1024);
+        assert_eq!(updated[0].modified_at(), 1_710_000_000);
+        assert_eq!(updated[0].file_hash(), "hash-1");
+        assert_eq!(updated[0].etag(), "etag-1");
+        assert!(updated[0].last_checked_at() > 0);
     }
 
     #[test]
