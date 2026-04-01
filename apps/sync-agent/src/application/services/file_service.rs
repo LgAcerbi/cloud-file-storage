@@ -1,7 +1,7 @@
 use crate::application::ports::file_blob_repository::{FileBlobMetadata, FileBlobRepository};
 use crate::application::ports::file_metadata_repository::FileMetadataRepository;
 use crate::application::ports::file_remote_gateway::{FileRemoteGateway, FileRemoteGatewayError};
-use crate::domain::entities::file_metadata::FileMetadata;
+use crate::domain::entities::file_metadata::{FileMetadata, FileMetadataError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileServiceError {
@@ -9,6 +9,7 @@ pub enum FileServiceError {
     FileBlobMetadataNotFound,
     FileBlobHashNotFound,
     RemoteGateway(FileRemoteGatewayError),
+    InvalidFileMetadata(FileMetadataError),
 }
 
 pub struct FileService<TFileMetadataRepository, TFileBlobRepository, TFileRemoteGateway>
@@ -71,15 +72,10 @@ where
 
     fn should_update_by_hash(
         &self,
-        file_path: &str,
+        local_file_hash: &str,
         file_metadata: &FileMetadata,
-    ) -> Result<bool, FileServiceError> {
-        let local_file_hash = self
-            .file_blob_repository
-            .get_file_blob_hash_by_path(file_path)
-            .ok_or(FileServiceError::FileBlobHashNotFound)?;
-
-        Ok(local_file_hash != file_metadata.file_hash())
+    ) -> bool {
+        local_file_hash != file_metadata.file_hash()
     }
 
     fn sync_existing_remote(
@@ -91,11 +87,31 @@ where
     ) -> Result<(), FileServiceError> {
         let is_changed = self.should_update_by_metadata(file_metadata, file_blob_metadata);
 
-        if is_changed && self.should_update_by_hash(file_path, file_metadata)? {
+        if is_changed {
+            let local_file_hash = self
+                .file_blob_repository
+                .get_file_blob_hash_by_path(file_path)
+                .ok_or(FileServiceError::FileBlobHashNotFound)?;
+
+            if !self.should_update_by_hash(&local_file_hash, file_metadata) {
+                return Ok(());
+            }
+
             let _updated_file_metadata = self
                 .file_remote_gateway
                 .update_file(file_metadata.id(), file_blob)
                 .map_err(FileServiceError::RemoteGateway)?;
+            let refreshed_file_metadata = FileMetadata::new(
+                file_metadata.id().to_string(),
+                file_metadata.name().to_string(),
+                file_metadata.file_path().to_string(),
+                file_blob_metadata.size_bytes,
+                file_blob_metadata.modified_at,
+                local_file_hash,
+            )
+            .map_err(FileServiceError::InvalidFileMetadata)?;
+            self.file_metadata_repository
+                .update_file_metadata(refreshed_file_metadata);
         }
 
         Ok(())
@@ -138,11 +154,16 @@ mod tests {
     struct InMemoryFileMetadataRepository {
         file_metadata: Option<FileMetadata>,
         created_file_metadata: RefCell<Vec<FileMetadata>>,
+        updated_file_metadata: RefCell<Vec<FileMetadata>>,
     }
 
     impl FileMetadataRepository for InMemoryFileMetadataRepository {
         fn create_file_metadata(&self, file_metadata: FileMetadata) {
             self.created_file_metadata.borrow_mut().push(file_metadata);
+        }
+
+        fn update_file_metadata(&self, file_metadata: FileMetadata) {
+            self.updated_file_metadata.borrow_mut().push(file_metadata);
         }
 
         fn get_file_metadata_by_id(&self, _id: &str) -> Option<FileMetadata> {
@@ -248,6 +269,7 @@ mod tests {
         let metadata_repository = InMemoryFileMetadataRepository {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
+            updated_file_metadata: RefCell::new(Vec::new()),
         };
         let blob_repository = InMemoryFileBlobRepository {
             file_blob: None,
@@ -267,6 +289,7 @@ mod tests {
         let metadata_repository = InMemoryFileMetadataRepository {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
+            updated_file_metadata: RefCell::new(Vec::new()),
         };
         let blob_repository = InMemoryFileBlobRepository {
             file_blob: Some(vec![1, 2, 3]),
@@ -294,6 +317,21 @@ mod tests {
             .created_file_metadata
             .into_inner()
             .is_empty());
+        assert_eq!(
+            service
+                .file_metadata_repository
+                .updated_file_metadata
+                .into_inner(),
+            vec![FileMetadata::new(
+                "file-1".to_string(),
+                "report.pdf".to_string(),
+                "/docs/report.pdf".to_string(),
+                2048,
+                1_720_000_000,
+                "hash-2".to_string(),
+            )
+            .unwrap()]
+        );
     }
 
     #[test]
@@ -310,6 +348,7 @@ mod tests {
         let metadata_repository = InMemoryFileMetadataRepository {
             file_metadata: None,
             created_file_metadata: RefCell::new(Vec::new()),
+            updated_file_metadata: RefCell::new(Vec::new()),
         };
         let blob_repository = InMemoryFileBlobRepository {
             file_blob: Some(vec![4, 5, 6]),
@@ -339,6 +378,11 @@ mod tests {
                 .into_inner(),
             vec![uploaded_metadata]
         );
+        assert!(service
+            .file_metadata_repository
+            .updated_file_metadata
+            .into_inner()
+            .is_empty());
     }
 
     #[test]
@@ -346,6 +390,7 @@ mod tests {
         let metadata_repository = InMemoryFileMetadataRepository {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
+            updated_file_metadata: RefCell::new(Vec::new()),
         };
         let blob_repository = InMemoryFileBlobRepository {
             file_blob: Some(vec![1, 2, 3]),
@@ -362,6 +407,11 @@ mod tests {
 
         assert_eq!(result, Ok(()));
         assert!(service.file_remote_gateway.calls.into_inner().is_empty());
+        assert!(service
+            .file_metadata_repository
+            .updated_file_metadata
+            .into_inner()
+            .is_empty());
     }
 
     #[test]
@@ -369,6 +419,7 @@ mod tests {
         let metadata_repository = InMemoryFileMetadataRepository {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
+            updated_file_metadata: RefCell::new(Vec::new()),
         };
         let blob_repository = InMemoryFileBlobRepository {
             file_blob: Some(vec![1, 2, 3]),
@@ -385,6 +436,11 @@ mod tests {
 
         assert_eq!(result, Ok(()));
         assert!(service.file_remote_gateway.calls.into_inner().is_empty());
+        assert!(service
+            .file_metadata_repository
+            .updated_file_metadata
+            .into_inner()
+            .is_empty());
     }
 
     #[test]
@@ -392,6 +448,7 @@ mod tests {
         let metadata_repository = InMemoryFileMetadataRepository {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
+            updated_file_metadata: RefCell::new(Vec::new()),
         };
         let blob_repository = InMemoryFileBlobRepository {
             file_blob: Some(vec![1, 2, 3]),
@@ -423,6 +480,7 @@ mod tests {
         let metadata_repository = InMemoryFileMetadataRepository {
             file_metadata: None,
             created_file_metadata: RefCell::new(Vec::new()),
+            updated_file_metadata: RefCell::new(Vec::new()),
         };
         let blob_repository = InMemoryFileBlobRepository {
             file_blob: Some(vec![4, 5, 6]),
@@ -450,6 +508,11 @@ mod tests {
             .created_file_metadata
             .into_inner()
             .is_empty());
+        assert!(service
+            .file_metadata_repository
+            .updated_file_metadata
+            .into_inner()
+            .is_empty());
     }
 
     #[test]
@@ -457,6 +520,7 @@ mod tests {
         let metadata_repository = InMemoryFileMetadataRepository {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
+            updated_file_metadata: RefCell::new(Vec::new()),
         };
         let blob_repository = InMemoryFileBlobRepository {
             file_blob: Some(vec![1, 2, 3]),
@@ -482,6 +546,11 @@ mod tests {
         assert!(service
             .file_metadata_repository
             .created_file_metadata
+            .into_inner()
+            .is_empty());
+        assert!(service
+            .file_metadata_repository
+            .updated_file_metadata
             .into_inner()
             .is_empty());
     }
