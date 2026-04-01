@@ -1,5 +1,5 @@
 use crate::application::ports::file_blob_repository::{FileBlobMetadata, FileBlobRepository};
-use crate::application::ports::file_metadata_repository::FileMetadataRepository;
+use crate::application::ports::file_snapshot_repository::FileSnapshotRepository;
 use crate::application::ports::file_remote_gateway::{FileRemoteGateway, FileRemoteGatewayError};
 use crate::domain::entities::file_metadata::{FileMetadata, FileMetadataError};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,31 +14,31 @@ pub enum FileServiceError {
     InvalidFileMetadata(FileMetadataError),
 }
 
-pub struct FileService<TFileMetadataRepository, TFileBlobRepository, TFileRemoteGateway>
+pub struct FileService<TFileSnapshotRepository, TFileBlobRepository, TFileRemoteGateway>
 where
-    TFileMetadataRepository: FileMetadataRepository,
+    TFileSnapshotRepository: FileSnapshotRepository,
     TFileBlobRepository: FileBlobRepository,
     TFileRemoteGateway: FileRemoteGateway,
 {
-    file_metadata_repository: TFileMetadataRepository,
+    file_snapshot_repository: TFileSnapshotRepository,
     file_blob_repository: TFileBlobRepository,
     file_remote_gateway: TFileRemoteGateway,
 }
 
-impl<TFileMetadataRepository, TFileBlobRepository, TFileRemoteGateway>
-    FileService<TFileMetadataRepository, TFileBlobRepository, TFileRemoteGateway>
+impl<TFileSnapshotRepository, TFileBlobRepository, TFileRemoteGateway>
+    FileService<TFileSnapshotRepository, TFileBlobRepository, TFileRemoteGateway>
 where
-    TFileMetadataRepository: FileMetadataRepository,
+    TFileSnapshotRepository: FileSnapshotRepository,
     TFileBlobRepository: FileBlobRepository,
     TFileRemoteGateway: FileRemoteGateway,
 {
     pub fn new(
-        file_metadata_repository: TFileMetadataRepository,
+        file_snapshot_repository: TFileSnapshotRepository,
         file_blob_repository: TFileBlobRepository,
         file_remote_gateway: TFileRemoteGateway,
     ) -> Self {
         Self {
-            file_metadata_repository,
+            file_snapshot_repository,
             file_blob_repository,
             file_remote_gateway,
         }
@@ -67,7 +67,7 @@ where
             .file_blob_repository
             .get_file_blob_metadata_by_path(file_path)
             .ok_or(FileServiceError::FileBlobMetadataNotFound)?;
-        let file_metadata = self.file_metadata_repository.get_file_metadata_by_path(file_path);
+        let file_metadata = self.file_snapshot_repository.get_file_metadata_by_path(file_path);
 
         Ok((file_blob_metadata, file_metadata))
     }
@@ -106,7 +106,7 @@ where
                 .ok_or(FileServiceError::FileBlobHashNotFound)?;
 
             if !self.should_update_by_hash(&local_file_hash, file_metadata) {
-                self.file_metadata_repository
+                self.file_snapshot_repository
                     .update_file_metadata(file_metadata.with_last_checked_at(checked_at));
                 return Ok(());
             }
@@ -125,10 +125,10 @@ where
                 updated_file_metadata.etag().to_string(),
             )
             .map_err(FileServiceError::InvalidFileMetadata)?;
-            self.file_metadata_repository
+            self.file_snapshot_repository
                 .update_file_metadata(refreshed_file_metadata.with_last_checked_at(checked_at));
         } else {
-            self.file_metadata_repository
+            self.file_snapshot_repository
                 .update_file_metadata(file_metadata.with_last_checked_at(checked_at));
         }
 
@@ -147,7 +147,7 @@ where
             .file_remote_gateway
             .upload_file(file_blob)
             .map_err(FileServiceError::RemoteGateway)?;
-        self.file_metadata_repository
+        self.file_snapshot_repository
             .create_file_metadata(uploaded_file_metadata);
         Ok(())
     }
@@ -177,19 +177,19 @@ where
 mod tests {
     use super::{FileService, FileServiceError};
     use crate::application::ports::file_blob_repository::{FileBlobMetadata, FileBlobRepository};
-    use crate::application::ports::file_metadata_repository::FileMetadataRepository;
+    use crate::application::ports::file_snapshot_repository::FileSnapshotRepository;
     use crate::application::ports::file_remote_gateway::{FileRemoteGateway, FileRemoteGatewayError};
     use crate::domain::entities::file_metadata::FileMetadata;
     use std::cell::RefCell;
 
-    struct InMemoryFileMetadataRepository {
+    struct InMemoryFileSnapshotRepository {
         file_metadata: Option<FileMetadata>,
         created_file_metadata: RefCell<Vec<FileMetadata>>,
         updated_file_metadata: RefCell<Vec<FileMetadata>>,
         last_get_by_path: RefCell<Option<String>>,
     }
 
-    impl FileMetadataRepository for InMemoryFileMetadataRepository {
+    impl FileSnapshotRepository for InMemoryFileSnapshotRepository {
         fn create_file_metadata(&self, file_metadata: FileMetadata) {
             self.created_file_metadata.borrow_mut().push(file_metadata);
         }
@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn returns_error_when_file_blob_is_not_found_by_path() {
-        let metadata_repository = InMemoryFileMetadataRepository {
+        let snapshot_repository = InMemoryFileSnapshotRepository {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
             updated_file_metadata: RefCell::new(Vec::new()),
@@ -333,7 +333,7 @@ mod tests {
             last_blob_hash_path: RefCell::new(None),
         };
         let remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
-        let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
+        let service = FileService::new(snapshot_repository, blob_repository, remote_gateway);
 
         let result = service.sync_local_changes_to_remote("/docs/missing.pdf");
 
@@ -352,7 +352,7 @@ mod tests {
             "etag-2".to_string(),
         )
         .unwrap();
-        let metadata_repository = InMemoryFileMetadataRepository {
+        let snapshot_repository = InMemoryFileSnapshotRepository {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
             updated_file_metadata: RefCell::new(Vec::new()),
@@ -371,7 +371,7 @@ mod tests {
         };
         let remote_gateway = InMemoryFileRemoteGateway::new(remote_updated_metadata);
 
-        let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
+        let service = FileService::new(snapshot_repository, blob_repository, remote_gateway);
         let result = service.sync_local_changes_to_remote("/docs/report.pdf");
 
         assert_eq!(result, Ok(()));
@@ -384,13 +384,13 @@ mod tests {
             }]
         );
         assert!(service
-            .file_metadata_repository
+            .file_snapshot_repository
             .created_file_metadata
             .into_inner()
             .is_empty());
         assert_eq!(
             service
-                .file_metadata_repository
+                .file_snapshot_repository
                 .updated_file_metadata
                 .into_inner(),
             vec![FileMetadata::new(
@@ -418,7 +418,7 @@ mod tests {
             "etag-uploaded".to_string(),
         )
         .unwrap();
-        let metadata_repository = InMemoryFileMetadataRepository {
+        let snapshot_repository = InMemoryFileSnapshotRepository {
             file_metadata: None,
             created_file_metadata: RefCell::new(Vec::new()),
             updated_file_metadata: RefCell::new(Vec::new()),
@@ -437,7 +437,7 @@ mod tests {
         };
         let remote_gateway = InMemoryFileRemoteGateway::new(uploaded_metadata.clone());
 
-        let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
+        let service = FileService::new(snapshot_repository, blob_repository, remote_gateway);
 
         let result = service.sync_local_changes_to_remote("/docs/new-file.pdf");
 
@@ -450,13 +450,13 @@ mod tests {
         );
         assert_eq!(
             service
-                .file_metadata_repository
+                .file_snapshot_repository
                 .created_file_metadata
                 .into_inner(),
             vec![uploaded_metadata]
         );
         assert!(service
-            .file_metadata_repository
+            .file_snapshot_repository
             .updated_file_metadata
             .into_inner()
             .is_empty());
@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn does_not_update_remote_file_when_metadata_matches_blob_metadata() {
-        let metadata_repository = InMemoryFileMetadataRepository {
+        let snapshot_repository = InMemoryFileSnapshotRepository {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
             updated_file_metadata: RefCell::new(Vec::new()),
@@ -483,13 +483,13 @@ mod tests {
         };
         let remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
 
-        let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
+        let service = FileService::new(snapshot_repository, blob_repository, remote_gateway);
         let result = service.sync_local_changes_to_remote("/docs/report.pdf");
 
         assert_eq!(result, Ok(()));
         assert!(service.file_remote_gateway.calls.into_inner().is_empty());
         let updated = service
-            .file_metadata_repository
+                .file_snapshot_repository
             .updated_file_metadata
             .into_inner();
         assert_eq!(updated.len(), 1);
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn does_not_update_remote_file_when_hash_matches_after_metadata_change_detection() {
-        let metadata_repository = InMemoryFileMetadataRepository {
+        let snapshot_repository = InMemoryFileSnapshotRepository {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
             updated_file_metadata: RefCell::new(Vec::new()),
@@ -522,13 +522,13 @@ mod tests {
         };
         let remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
 
-        let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
+        let service = FileService::new(snapshot_repository, blob_repository, remote_gateway);
         let result = service.sync_local_changes_to_remote("/docs/report.pdf");
 
         assert_eq!(result, Ok(()));
         assert!(service.file_remote_gateway.calls.into_inner().is_empty());
         let updated = service
-            .file_metadata_repository
+                .file_snapshot_repository
             .updated_file_metadata
             .into_inner();
         assert_eq!(updated.len(), 1);
@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn returns_error_when_hash_is_needed_but_not_found() {
-        let metadata_repository = InMemoryFileMetadataRepository {
+        let snapshot_repository = InMemoryFileSnapshotRepository {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
             updated_file_metadata: RefCell::new(Vec::new()),
@@ -561,7 +561,7 @@ mod tests {
         };
         let remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
 
-        let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
+        let service = FileService::new(snapshot_repository, blob_repository, remote_gateway);
         let result = service.sync_local_changes_to_remote("/docs/report.pdf");
 
         assert_eq!(result, Err(FileServiceError::FileBlobHashNotFound));
@@ -579,7 +579,7 @@ mod tests {
             "etag-uploaded".to_string(),
         )
         .unwrap();
-        let metadata_repository = InMemoryFileMetadataRepository {
+        let snapshot_repository = InMemoryFileSnapshotRepository {
             file_metadata: None,
             created_file_metadata: RefCell::new(Vec::new()),
             updated_file_metadata: RefCell::new(Vec::new()),
@@ -599,7 +599,7 @@ mod tests {
         let mut remote_gateway = InMemoryFileRemoteGateway::new(uploaded_metadata);
         remote_gateway.upload_error = Some(FileRemoteGatewayError::Timeout);
 
-        let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
+        let service = FileService::new(snapshot_repository, blob_repository, remote_gateway);
         let result = service.sync_local_changes_to_remote("/docs/new-file.pdf");
 
         assert_eq!(
@@ -610,12 +610,12 @@ mod tests {
         );
         assert!(service.file_remote_gateway.calls.into_inner().is_empty());
         assert!(service
-            .file_metadata_repository
+            .file_snapshot_repository
             .created_file_metadata
             .into_inner()
             .is_empty());
         assert!(service
-            .file_metadata_repository
+            .file_snapshot_repository
             .updated_file_metadata
             .into_inner()
             .is_empty());
@@ -623,7 +623,7 @@ mod tests {
 
     #[test]
     fn returns_error_when_remote_update_fails_and_does_not_persist_metadata() {
-        let metadata_repository = InMemoryFileMetadataRepository {
+        let snapshot_repository = InMemoryFileSnapshotRepository {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
             updated_file_metadata: RefCell::new(Vec::new()),
@@ -643,7 +643,7 @@ mod tests {
         let mut remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
         remote_gateway.update_error = Some(FileRemoteGatewayError::Network);
 
-        let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
+        let service = FileService::new(snapshot_repository, blob_repository, remote_gateway);
         let result = service.sync_local_changes_to_remote("/docs/report.pdf");
 
         assert_eq!(
@@ -654,12 +654,12 @@ mod tests {
         );
         assert!(service.file_remote_gateway.calls.into_inner().is_empty());
         assert!(service
-            .file_metadata_repository
+            .file_snapshot_repository
             .created_file_metadata
             .into_inner()
             .is_empty());
         assert!(service
-            .file_metadata_repository
+            .file_snapshot_repository
             .updated_file_metadata
             .into_inner()
             .is_empty());
@@ -667,7 +667,7 @@ mod tests {
 
     #[test]
     fn returns_conflict_when_remote_etag_precondition_fails() {
-        let metadata_repository = InMemoryFileMetadataRepository {
+        let snapshot_repository = InMemoryFileSnapshotRepository {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
             updated_file_metadata: RefCell::new(Vec::new()),
@@ -687,7 +687,7 @@ mod tests {
         let mut remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
         remote_gateway.update_error = Some(FileRemoteGatewayError::Conflict);
 
-        let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
+        let service = FileService::new(snapshot_repository, blob_repository, remote_gateway);
         let result = service.sync_local_changes_to_remote("/docs/report.pdf");
 
         assert_eq!(
@@ -697,7 +697,7 @@ mod tests {
             ))
         );
         assert!(service
-            .file_metadata_repository
+            .file_snapshot_repository
             .updated_file_metadata
             .into_inner()
             .is_empty());
@@ -705,7 +705,7 @@ mod tests {
 
     #[test]
     fn returns_error_when_file_path_is_empty_or_whitespace() {
-        let metadata_repository = InMemoryFileMetadataRepository {
+        let snapshot_repository = InMemoryFileSnapshotRepository {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
             updated_file_metadata: RefCell::new(Vec::new()),
@@ -723,7 +723,7 @@ mod tests {
             last_blob_hash_path: RefCell::new(None),
         };
         let remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
-        let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
+        let service = FileService::new(snapshot_repository, blob_repository, remote_gateway);
 
         let empty_result = service.sync_local_changes_to_remote("");
         let whitespace_result = service.sync_local_changes_to_remote("   ");
@@ -734,7 +734,7 @@ mod tests {
 
     #[test]
     fn normalizes_windows_style_path_before_repository_calls() {
-        let metadata_repository = InMemoryFileMetadataRepository {
+        let snapshot_repository = InMemoryFileSnapshotRepository {
             file_metadata: Some(build_file_metadata()),
             created_file_metadata: RefCell::new(Vec::new()),
             updated_file_metadata: RefCell::new(Vec::new()),
@@ -752,7 +752,7 @@ mod tests {
             last_blob_hash_path: RefCell::new(None),
         };
         let remote_gateway = InMemoryFileRemoteGateway::new(build_file_metadata());
-        let service = FileService::new(metadata_repository, blob_repository, remote_gateway);
+        let service = FileService::new(snapshot_repository, blob_repository, remote_gateway);
 
         let _ = service.sync_local_changes_to_remote("  \\docs\\report.pdf  ");
 
@@ -769,7 +769,7 @@ mod tests {
             Some("/docs/report.pdf".to_string())
         );
         assert_eq!(
-            service.file_metadata_repository.last_get_by_path.into_inner(),
+            service.file_snapshot_repository.last_get_by_path.into_inner(),
             Some("/docs/report.pdf".to_string())
         );
     }
