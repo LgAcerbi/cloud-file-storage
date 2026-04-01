@@ -220,10 +220,6 @@ mod tests {
     }
 
     impl FileBlobRepository for InMemoryFileBlobRepository {
-        fn exists_file_blob_by_id(&self, _file_id: &str) -> bool {
-            self.file_blob.is_some()
-        }
-
         fn get_file_blob_by_path(&self, file_path: &str) -> Option<Vec<u8>> {
             self.last_blob_path.borrow_mut().replace(file_path.to_string());
             self.file_blob.clone()
