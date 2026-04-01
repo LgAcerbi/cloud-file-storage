@@ -15,6 +15,7 @@ pub trait FileRemoteGateway {
     fn update_file(
         &self,
         id: &str,
+        expected_etag: &str,
         file_blob: Vec<u8>,
     ) -> Result<FileMetadata, FileRemoteGatewayError>;
 }
