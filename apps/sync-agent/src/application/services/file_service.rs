@@ -338,6 +338,10 @@ mod tests {
 
     #[test]
     fn updates_remote_file_when_metadata_exists() {
+        let start_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let remote_updated_metadata = FileMetadata::new(
             "file-1".to_string(),
             "report.pdf".to_string(),
@@ -369,6 +373,10 @@ mod tests {
 
         let service = FileService::new(snapshot_repository, blob_repository, remote_gateway);
         let result = service.sync_local_changes_to_remote("/docs/report.pdf");
+        let end_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
         assert_eq!(result, Ok(()));
         assert_eq!(
@@ -384,21 +392,22 @@ mod tests {
             .created_file_metadata
             .into_inner()
             .is_empty());
-        assert_eq!(
-            service
-                .file_snapshot_repository
-                .updated_file_metadata
-                .into_inner(),
-            vec![FileMetadata::new(
-                "file-1".to_string(),
-                "report.pdf".to_string(),
-                "/docs/report.pdf".to_string(),
-                2048,
-                1_720_000_000,
-                "hash-2".to_string(),
-                "etag-2".to_string(),
-            )
-            .unwrap()]
+        let updated = service
+            .file_snapshot_repository
+            .updated_file_metadata
+            .into_inner();
+        assert_eq!(updated.len(), 1);
+        let m = &updated[0];
+        assert_eq!(m.id(), "file-1");
+        assert_eq!(m.name(), "report.pdf");
+        assert_eq!(m.file_path(), "/docs/report.pdf");
+        assert_eq!(m.size_bytes(), 2048);
+        assert_eq!(m.modified_at(), 1_720_000_000);
+        assert_eq!(m.file_hash(), "hash-2");
+        assert_eq!(m.etag(), "etag-2");
+        assert!(
+            m.last_checked_at() >= start_secs && m.last_checked_at() <= end_secs,
+            "last_checked_at should be set from wall clock during sync"
         );
     }
 
