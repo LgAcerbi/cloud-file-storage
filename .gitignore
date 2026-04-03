@@ -1,0 +1,15 @@
+# Cargo — compiled artifacts and intermediates (any crate in the repo)
+target/
+
+# MSVC debug symbols (Windows)
+*.pdb
+
+# rustfmt (backup files; older toolchains)
+*.rs.bk
+
+# LLVM coverage (e.g. cargo llvm-cov)
+*.profraw
+
+# Backup merge / patch leftovers
+*.orig
+*.rej
