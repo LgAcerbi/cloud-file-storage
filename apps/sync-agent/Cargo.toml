@@ -5,6 +5,8 @@ edition = "2021"
 
 [dependencies]
 hex = "0.4"
+notify = "8.2.0"
+notify-debouncer-mini = "0.7.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
 
